@@ -7,41 +7,42 @@ from os.path import join
 from tqdm import tqdm
 
 
-tf.app.flags.DEFINE_string('gpu_list', '0,1', '')
-tf.app.flags.DEFINE_string('HOME', '/media/data1/ENTLI', '')
+tf.app.flags.DEFINE_string('gpu_list', '0,1,2,3', '')
+tf.app.flags.DEFINE_string('HOME', '/home/tan/tony/entli', '')
 tf.app.flags.DEFINE_string('dataset_name', 'test', '')
 
-tf.app.flags.DEFINE_string('task_name', 'weighted_entropy_10', 'Provided loss funtions: dice, weighted_loss, entropy, weighted_entropy')
+tf.app.flags.DEFINE_string('task_name', 'test', '')
 
 tf.app.flags.DEFINE_integer('num_of_channels', 4, '')
 tf.app.flags.DEFINE_integer('input_size', 512, '')
 tf.app.flags.DEFINE_boolean('continue_train', False, '')
-tf.app.flags.DEFINE_float('learning_rate', 0.0001, '')
+tf.app.flags.DEFINE_float('learning_rate', 0.001, '')
 tf.app.flags.DEFINE_float('moving_average_decay', 0.99, '')
 tf.app.flags.DEFINE_integer('batch_size_per_gpu', 16, '')
-tf.app.flags.DEFINE_integer('num_of_labels', 2, '')
+tf.app.flags.DEFINE_integer('num_of_labels', 3, '')
 
 tf.app.flags.DEFINE_integer('background', 0, '')
 tf.app.flags.DEFINE_integer('landslide', 1, '')
-tf.app.flags.DEFINE_integer('build', 2, '')
+tf.app.flags.DEFINE_integer('building', 2, '')
 
 tf.app.flags.DEFINE_float('weight', 10., '')
-tf.app.flags.DEFINE_string('loss', 'weighted_entropy', '')
 tf.app.flags.DEFINE_float('dice_thres', 0.8, '')
 tf.app.flags.DEFINE_integer('initial_step', 0, '')
 
 from nets import model
 from nets import loss
-from utils import read_info_from_txt, dir_concat
-import training_generator
+from utils import dir_concat
+from training_generator import Dataset
+
+TrainingDataset = Dataset(task='training', num_worker=1)
+data_generator = TrainingDataset.train_generator()
 
 FLAGS = tf.app.flags.FLAGS
 
 gpus = [int(gpu) for gpu in FLAGS.gpu_list.split(',')]
 print('INFO: Using GPU: {}'.format(gpus))
 checkpoint_path = dir_concat(FLAGS.HOME, ['checkpoint', FLAGS.task_name])
-means, stds = read_info_from_txt(dir_concat(FLAGS.HOME, ['dataset', FLAGS.dataset_name, 'train.txt']))
-epoch_iters = 1300 // (FLAGS.batch_size_per_gpu * len(gpus))
+epoch_iters = 1000 // (FLAGS.batch_size_per_gpu * len(gpus))
 
 
 def scar_accuracy(target_label_maps, softmax_logits):
@@ -60,30 +61,20 @@ def scar_accuracy(target_label_maps, softmax_logits):
 def tower_loss(input_images, target_label_maps, reuse_variables=None):
     with tf.variable_scope(tf.get_variable_scope(), reuse=reuse_variables):
         softmax_logits = model.model(input_images, is_training=True)
-    if FLAGS.loss == 'dice':
-        model_loss = loss.weighted_dice_loss(softmax_logits, target_label_maps, reuse=reuse_variables)
-    elif FLAGS.loss == 'entropy':
-        model_loss = loss.categorical_crossentropy(softmax_logits, target_label_maps, from_logits=False)
-    else:
-        model_loss = loss.weighted_categorical_crossentropy(softmax_logits, target_label_maps, from_logits=False, reuse=reuse_variables)
+        model_loss = loss.model_loss(softmax_logits, target_label_maps)
     total_loss = tf.add_n([model_loss] + tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
     landslide_acc, landslide_map = scar_accuracy(target_label_maps, softmax_logits)
 
     if reuse_variables is None:
-        tf.summary.image('prior image', (input_images[:, :, :, :3] * stds[:3]) + means[:3])
-        tf.summary.image('posterior image', (input_images[:, :, :, 3:6] * stds[3:6]) + means[3:6])
-        tf.summary.image('DTM', tf.expand_dims((input_images[:, :, :, -1] * stds[6]) + means[6], axis=-1))
+        one_hot_label_maps = tf.one_hot(tf.cast(tf.nn.relu(target_label_maps), dtype=tf.int32), depth=3)
 
-        if FLAGS.loss == 'dice':
-            tf.summary.image('return label map', tf.expand_dims(softmax_logits[:, :, :, 0], axis=-1) * 255)
-            tf.summary.image('target label map', tf.expand_dims(target_label_maps[:, :, :, 0], axis=-1) * 255)
-            tf.summary.image('return landslide label', tf.cast(landslide_map, dtype=tf.float32) * 255)
-        else:
-            tf.summary.image('return label map 0', tf.expand_dims(softmax_logits[:, :, :, 0], axis=-1) * 255)
-            tf.summary.image('return label map 1', tf.expand_dims(softmax_logits[:, :, :, 1], axis=-1) * 255)
-            tf.summary.image('target label map 0', tf.expand_dims(target_label_maps[:, :, :, 0], axis=-1) * 255)
-            tf.summary.image('target label map 1', tf.expand_dims(target_label_maps[:, :, :, 1], axis=-1) * 255)
-            tf.summary.image('return landslide label', tf.expand_dims(tf.cast(landslide_map, dtype=tf.float32), axis=-1) * 255)
+        tf.summary.image('return label map 0', tf.expand_dims(softmax_logits[:, :, :, 0], axis=-1) * 255)
+        tf.summary.image('return label map 1', tf.expand_dims(softmax_logits[:, :, :, 1], axis=-1) * 255)
+        tf.summary.image('return label map 2', tf.expand_dims(softmax_logits[:, :, :, 2], axis=-1) * 255)
+        tf.summary.image('target label map 0', tf.expand_dims(one_hot_label_maps[:, :, :, 0], axis=-1) * 255)
+        tf.summary.image('target label map 1', tf.expand_dims(one_hot_label_maps[:, :, :, 1], axis=-1) * 255)
+        tf.summary.image('target label map 2', tf.expand_dims(one_hot_label_maps[:, :, :, 2], axis=-1) * 255)
+        tf.summary.image('return landslide label', tf.expand_dims(tf.cast(landslide_map, dtype=tf.float32), axis=-1) * 255)
 
         tf.summary.scalar('model_loss', model_loss)
         tf.summary.scalar('total_loss', total_loss)
@@ -126,7 +117,6 @@ def main(argv=None):
         tf.gfile.MkDir(checkpoint_path)
 
     input_images = tf.placeholder(tf.float32, shape=[None, FLAGS.input_size, FLAGS.input_size, FLAGS.num_of_channels], name='input_images')
-
     input_label_maps = tf.placeholder(tf.float32, shape=[None, FLAGS.input_size, FLAGS.input_size], name='input_label_maps')
 
     input_images_split = tf.split(input_images, len(gpus))
@@ -166,11 +156,8 @@ def main(argv=None):
 
     init = tf.global_variables_initializer()
 
-    data_generator = training_generator.get_batch(num_workers=6, max_queue_size=12, batch_size=FLAGS.batch_size_per_gpu * len(gpus))
-
-
-    config = tf.ConfigProto(allow_soft_placement = True)
-    config.gpu_options.allow_growth = True
+    config = tf.ConfigProto(allow_soft_placement=True)
+    config.gpu_options.allow_growth = False
 
 
 
@@ -195,7 +182,8 @@ def main(argv=None):
                 iter_data_load_time = time.time() - iter_start_time
                 data_load_time += iter_data_load_time
                 ml, tl, acc, lr, _ = sess.run([model_loss, total_loss, landslide_acc, learning_rate, train_operation],
-                                              feed_dict={input_images: data[0], input_label_maps: data[1]})
+                                              feed_dict={input_images: data[0],
+                                                         input_label_maps: data[1]})
                 epoch_model_loss += ml
                 epoch_total_loss += tl
                 epoch_acc += acc
@@ -203,7 +191,8 @@ def main(argv=None):
                 training_time += iter_training_time
 
             _, ml, tl, acc, lr, summary = sess.run([train_operation, model_loss, total_loss, landslide_acc, learning_rate, summary_operation],
-                                                feed_dict={input_images: data[0],input_label_maps: data[1]})
+                                                feed_dict={input_images: data[0],
+                                                           input_label_maps: data[1]})
             print('epoch {:03d}: model_loss={:.4f}, total_loss={:.4f}, accuracy={:.4f}, learning rate={:.6f}'
                   .format(epoch, epoch_model_loss / epoch_iters, epoch_total_loss / epoch_iters, epoch_acc / epoch_iters, lr))
             print('Data load time per image: {:.2f} ms, Network training time per image: {:.2f} ms'
@@ -218,8 +207,6 @@ def main(argv=None):
                 # print('INFO: Start validation on the validation dataset.')
                 # os.system()
                 saver.save(sess, join(checkpoint_path, 'model_{:03d}.ckpt'.format(epoch)))
-
-
             epoch += 1
 
 if __name__ == '__main__':

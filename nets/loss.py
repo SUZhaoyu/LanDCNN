@@ -139,13 +139,15 @@ def categorical_focal_loss(y_true, y_pred, alpha, gamma):
 
         return loss
 
-def model_loss(logits, labels):
 
-    y_pred = tf.nn.softmax(logits, axis=-1)
-    y_true = tf.one_hot(labels, depth=3)
+def model_loss(y_pred, labels):
+
+    y_true = tf.one_hot(tf.cast(tf.nn.relu(labels), dtype=tf.int32), depth=3)
 
     focal_loss = categorical_focal_loss(y_true, y_pred, alpha=[0.25, 0.75, 0.75], gamma=2.)
-    focal_loss = tf.reduce_mean(focal_loss)
+    focal_loss = tf.reduce_sum(focal_loss, axis=-1)
+    masks = tf.cast(tf.less(labels, -0.5), dtype=tf.float32)
+    focal_loss = tf.reduce_sum(focal_loss * masks) / (tf.reduce_sum(masks) + 1e-6)
 
     return focal_loss
 
