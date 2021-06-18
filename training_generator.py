@@ -16,7 +16,7 @@ class Dataset(object):
                  batch_size=16,
                  queue_size=10,
                  num_worker=1,
-                 home='/home/tan/tony/entli/dataset/preprocessed'):
+                 home='/media/data1/LanDCNN/dataset/preprocessed'):
         self.input_data = np.load(join(home, '{}.npy'.format(task)))
         self.batch_size = batch_size
         self.queue_size = queue_size
@@ -72,7 +72,7 @@ class Dataset(object):
 
 
 if __name__ =='__main__':
-    output_home = '/home/tan/tony/entli/dataset/preprocessed/viz'
+    # output_home = '/home/tan/tony/entli/dataset/preprocessed/viz'
     TrainingDataset = Dataset(task='training', num_worker=1)
     training_data_generator = TrainingDataset.train_generator()
     for i in tqdm(range(5000)):

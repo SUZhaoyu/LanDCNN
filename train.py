@@ -7,8 +7,8 @@ from os.path import join
 from tqdm import tqdm
 
 
-tf.app.flags.DEFINE_string('gpu_list', '0,1,2,3', '')
-tf.app.flags.DEFINE_string('HOME', '/home/tan/tony/entli', '')
+tf.app.flags.DEFINE_string('gpu_list', '0,1', '')
+tf.app.flags.DEFINE_string('HOME', '/media/data1/LanDCNN', '')
 tf.app.flags.DEFINE_string('dataset_name', 'test', '')
 
 tf.app.flags.DEFINE_string('task_name', 'test', '')
@@ -21,9 +21,9 @@ tf.app.flags.DEFINE_float('moving_average_decay', 0.99, '')
 tf.app.flags.DEFINE_integer('batch_size_per_gpu', 16, '')
 tf.app.flags.DEFINE_integer('num_of_labels', 3, '')
 
-tf.app.flags.DEFINE_integer('background', 0, '')
-tf.app.flags.DEFINE_integer('landslide', 1, '')
-tf.app.flags.DEFINE_integer('building', 2, '')
+tf.app.flags.DEFINE_integer('background_id', 0, '')
+tf.app.flags.DEFINE_integer('landslide_id', 1, '')
+tf.app.flags.DEFINE_integer('building_id', 2, '')
 
 tf.app.flags.DEFINE_float('weight', 10., '')
 tf.app.flags.DEFINE_float('dice_thres', 0.8, '')
@@ -42,28 +42,37 @@ FLAGS = tf.app.flags.FLAGS
 gpus = [int(gpu) for gpu in FLAGS.gpu_list.split(',')]
 print('INFO: Using GPU: {}'.format(gpus))
 checkpoint_path = dir_concat(FLAGS.HOME, ['checkpoint', FLAGS.task_name])
+os.system('rm -rf {}'.format(checkpoint_path))
 epoch_iters = 1000 // (FLAGS.batch_size_per_gpu * len(gpus))
 
 
-def scar_accuracy(target_label_maps, softmax_logits):
-    epsilon = tf.convert_to_tensor(1, tf.int64)
-    class_id_true = tf.argmax(target_label_maps, axis=-1)
-    class_id_pred = tf.argmax(softmax_logits, axis=-1)
-    # Replace class_id_preds with class_id_true for recall here
-    landslide_mask_true = tf.cast(tf.equal(class_id_true, tf.constant(FLAGS.landslide, dtype=tf.int64)), tf.int64)
-    landslide_mask_pred = tf.cast(tf.equal(class_id_pred, tf.constant(FLAGS.landslide, dtype=tf.int64)), tf.int64)
-    correct_pred_tensor = tf.cast(tf.equal(landslide_mask_true, landslide_mask_pred), tf.int64) * landslide_mask_true
-    wrong_pred_tensor = tf.cast(tf.not_equal(landslide_mask_true, landslide_mask_pred), tf.int64) * tf.cast(tf.not_equal(
-        landslide_mask_true + landslide_mask_pred, tf.constant(FLAGS.background, dtype=tf.int64)), tf.int64)
-    class_acc = (tf.reduce_sum(correct_pred_tensor) + epsilon) / (tf.reduce_sum(correct_pred_tensor) + tf.reduce_sum(wrong_pred_tensor) + epsilon)
-    return class_acc, landslide_mask_pred
+def get_iou(target_label_maps, softmax_logits):
+    epsilon = tf.convert_to_tensor(1, tf.float32)
+    pred_labels = tf.argmax(softmax_logits, axis=-1)
+
+    landslide_gt = tf.cast(tf.equal(target_label_maps, FLAGS.landslide_id), dtype=tf.float32)
+    buildings_gt = tf.cast(tf.equal(target_label_maps, FLAGS.building_id), dtype=tf.float32)
+    landslide_pred = tf.cast(tf.equal(pred_labels, FLAGS.landslide_id), dtype=tf.float32)
+    buildings_pred = tf.cast(tf.equal(pred_labels, FLAGS.building_id), dtype=tf.float32)
+
+    landslide_correct = landslide_gt * landslide_pred
+    buildings_correct = buildings_gt * buildings_pred
+
+    landslide_union = tf.cast(tf.greater(landslide_gt + landslide_pred, 0), dtype=tf.float32)
+    buildings_union = tf.cast(tf.greater(buildings_gt + buildings_pred, 0), dtype=tf.float32)
+
+    landslide_iou = tf.reduce_sum(landslide_correct) / (tf.reduce_sum(landslide_union) + epsilon)
+    buildings_iou = tf.reduce_sum(buildings_correct) / (tf.reduce_sum(buildings_union) + epsilon)
+
+    return landslide_iou, buildings_iou
 
 def tower_loss(input_images, target_label_maps, reuse_variables=None):
     with tf.variable_scope(tf.get_variable_scope(), reuse=reuse_variables):
         softmax_logits = model.model(input_images, is_training=True)
         model_loss = loss.model_loss(softmax_logits, target_label_maps)
     total_loss = tf.add_n([model_loss] + tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
-    landslide_acc, landslide_map = scar_accuracy(target_label_maps, softmax_logits)
+    landslide_iou, buildings_iou = get_iou(target_label_maps, softmax_logits)
+    avg_iou = (landslide_iou + buildings_iou) / 2.
 
     if reuse_variables is None:
         one_hot_label_maps = tf.one_hot(tf.cast(tf.nn.relu(target_label_maps), dtype=tf.int32), depth=3)
@@ -74,13 +83,13 @@ def tower_loss(input_images, target_label_maps, reuse_variables=None):
         tf.summary.image('target label map 0', tf.expand_dims(one_hot_label_maps[:, :, :, 0], axis=-1) * 255)
         tf.summary.image('target label map 1', tf.expand_dims(one_hot_label_maps[:, :, :, 1], axis=-1) * 255)
         tf.summary.image('target label map 2', tf.expand_dims(one_hot_label_maps[:, :, :, 2], axis=-1) * 255)
-        tf.summary.image('return landslide label', tf.expand_dims(tf.cast(landslide_map, dtype=tf.float32), axis=-1) * 255)
 
         tf.summary.scalar('model_loss', model_loss)
         tf.summary.scalar('total_loss', total_loss)
-        tf.summary.scalar('landslide_accuracy', landslide_acc)
+        tf.summary.scalar('landslide_iou', landslide_iou)
+        tf.summary.scalar('buildings_iou', buildings_iou)
 
-    return total_loss, model_loss, landslide_acc
+    return total_loss, model_loss, avg_iou
 
 
 def average_grads(tower_grads):
@@ -134,7 +143,7 @@ def main(argv=None):
         with tf.device('/gpu:%d' % gpu_id):
             with tf.name_scope('model_%d' % gpu_id) as scope:
 
-                total_loss, model_loss, landslide_acc = tower_loss(input_images_split[i], input_label_maps_split[i], reuse_variables)
+                total_loss, model_loss, avg_iou = tower_loss(input_images_split[i], input_label_maps_split[i], reuse_variables)
                 batch_norm_update_operation = tf.group(*tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope))
                 reuse_variables = True
 
@@ -172,7 +181,7 @@ def main(argv=None):
 
         data_load_time, training_time = 0, 0
         epoch, step = 0, 0
-        epoch_model_loss, epoch_total_loss, epoch_acc = 0, 0, 0
+        epoch_model_loss, epoch_total_loss, epoch_iou = 0, 0, 0
         while epoch < 500:
             print('epoch: {:03d}'.format(epoch))
             for _ in tqdm(range(epoch_iters)):
@@ -181,26 +190,27 @@ def main(argv=None):
                 data = next(data_generator)
                 iter_data_load_time = time.time() - iter_start_time
                 data_load_time += iter_data_load_time
-                ml, tl, acc, lr, _ = sess.run([model_loss, total_loss, landslide_acc, learning_rate, train_operation],
+                ml, tl, iou, lr, _, summary = sess.run([model_loss, total_loss, avg_iou, learning_rate, train_operation, summary_operation],
                                               feed_dict={input_images: data[0],
                                                          input_label_maps: data[1]})
                 epoch_model_loss += ml
                 epoch_total_loss += tl
-                epoch_acc += acc
+                epoch_iou += iou
                 iter_training_time = time.time() - iter_start_time - iter_data_load_time
                 training_time += iter_training_time
+                summary_writer.add_summary(summary, global_step=epoch)
 
-            _, ml, tl, acc, lr, summary = sess.run([train_operation, model_loss, total_loss, landslide_acc, learning_rate, summary_operation],
-                                                feed_dict={input_images: data[0],
-                                                           input_label_maps: data[1]})
+            # _, ml, tl, iou, lr, summary = sess.run([train_operation, model_loss, total_loss, avg_iou, learning_rate, summary_operation],
+            #                                         feed_dict={input_images: data[0],
+            #                                                    input_label_maps: data[1]})
             print('epoch {:03d}: model_loss={:.4f}, total_loss={:.4f}, accuracy={:.4f}, learning rate={:.6f}'
-                  .format(epoch, epoch_model_loss / epoch_iters, epoch_total_loss / epoch_iters, epoch_acc / epoch_iters, lr))
+                  .format(epoch, epoch_model_loss / epoch_iters, epoch_total_loss / epoch_iters, epoch_iou / epoch_iters, lr))
             print('Data load time per image: {:.2f} ms, Network training time per image: {:.2f} ms'
                   .format((training_time * 1e3 / (FLAGS.batch_size_per_gpu * len(gpus) * epoch_iters)),
                           (data_load_time * 1e3 / (FLAGS.batch_size_per_gpu * len(gpus) * epoch_iters))))
             data_load_time, training_time = 0, 0
-            epoch_model_loss, epoch_total_loss, epoch_acc = 0, 0, 0
-            summary_writer.add_summary(summary, global_step=epoch)
+            epoch_model_loss, epoch_total_loss, epoch_iou = 0, 0, 0
+
             saver.save(sess, join(checkpoint_path, 'model_latest.ckpt'))
 
             if epoch % 10 == 0 and epoch != 0:

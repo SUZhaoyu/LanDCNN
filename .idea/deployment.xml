@@ -1,7 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="tan@gx4:22" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="LanDCNN@g7" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
+      <paths name="LanDCNN@g7">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/media/data1/LanDCNN" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="tan@gx4:22">
         <serverdata>
           <mappings>
