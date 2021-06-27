@@ -88,7 +88,7 @@ def model(images, weight_decay=1e-5, is_training=True):
             x = slim.conv2d(g[3], num_outputs=16, kernel_size=3)
             x = tf.image.resize_bilinear(x, size=[tf.shape(images)[1], tf.shape(images)[2]])
 
-            softmax_logits = slim.conv2d(x, num_outputs=FLAGS.num_of_labels, kernel_size=1, activation_fn=tf.nn.softmax, normalizer_fn=None)
+            softmax_logits = slim.conv2d(x, num_outputs=FLAGS.num_of_labels, kernel_size=1, activation_fn=tf.nn.sigmoid, normalizer_fn=None)
 
 
             print('INFO: Shape of final score map: {}'.format(logits.shape))

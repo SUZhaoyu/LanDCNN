@@ -68,11 +68,12 @@ def hsv(img):
 
     return imgrgb
 
-def color_adjust(tile):
-    aerial_img = tile[:, :, :3].astype(np.uint8)
-    tile[:, :, :3] = hsv(lab(aerial_img)).astype(np.float32)
+def color_adjust(img):
+    assert img.shape[-1] == 3
+    img = img.astype(np.uint8)
+    img = hsv(lab(img)).astype(np.float32)
 
-    return tile
+    return img
 
 def weight_mask(label_maps):
     w = np.ones((label_maps.shape[0], label_maps.shape[1]), dtype=np.float32)

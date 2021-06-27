@@ -18,8 +18,11 @@ tf.app.flags.DEFINE_boolean('continue_train', False, '')
 tf.app.flags.DEFINE_float('learning_rate', 0.0002, '')
 tf.app.flags.DEFINE_float('moving_average_decay', 0.95, '')
 tf.app.flags.DEFINE_integer('batch_size_per_gpu', 16, '')
-tf.app.flags.DEFINE_integer('num_of_labels', 1, '')
+tf.app.flags.DEFINE_integer('num_of_labels', 3, '')
 
+tf.app.flags.DEFINE_integer('background_id', 0, '')
+tf.app.flags.DEFINE_integer('landslide_id', 1, '')
+tf.app.flags.DEFINE_integer('building_id', 2, '')
 
 tf.app.flags.DEFINE_float('weight', 10., '')
 tf.app.flags.DEFINE_float('dice_thres', 0.8, '')
@@ -43,30 +46,56 @@ os.mkdir(checkpoint_path)
 epoch_iters = 1000 // (FLAGS.batch_size_per_gpu * len(gpus))
 
 
+def get_iou(target_label_maps, softmax_logits):
+    epsilon = tf.convert_to_tensor(1, tf.float32)
+    pred_labels = tf.argmax(tf.nn.softmax(softmax_logits), axis=-1)
+
+    landslide_gt = tf.cast(tf.equal(target_label_maps, FLAGS.landslide_id), dtype=tf.float32)
+    buildings_gt = tf.cast(tf.equal(target_label_maps, FLAGS.building_id), dtype=tf.float32)
+    landslide_pred = tf.cast(tf.equal(pred_labels, FLAGS.landslide_id), dtype=tf.float32)
+    buildings_pred = tf.cast(tf.equal(pred_labels, FLAGS.building_id), dtype=tf.float32)
+
+    landslide_correct = landslide_gt * landslide_pred
+    buildings_correct = buildings_gt * buildings_pred
+
+    landslide_union = tf.cast(tf.greater(landslide_gt + landslide_pred, 0), dtype=tf.float32)
+    buildings_union = tf.cast(tf.greater(buildings_gt + buildings_pred, 0), dtype=tf.float32)
+
+    landslide_iou = tf.reduce_sum(landslide_correct) / (tf.reduce_sum(landslide_union) + epsilon)
+    buildings_iou = tf.reduce_sum(buildings_correct) / (tf.reduce_sum(buildings_union) + epsilon)
+
+    tf.summary.scalar('landslide_correct', tf.reduce_sum(landslide_correct))
+    tf.summary.scalar('landslide_union', tf.reduce_sum(landslide_union))
+    tf.summary.scalar('buildings_correct', tf.reduce_sum(buildings_correct))
+    tf.summary.scalar('buildings_union', tf.reduce_sum(buildings_union))
+
+    return landslide_iou, buildings_iou
 
 def tower_loss(input_images, target_label_maps, reuse_variables=None):
     with tf.variable_scope(tf.get_variable_scope(), reuse=reuse_variables):
         softmax_logits = model.model(input_images, is_training=True)
         # model_loss = loss.model_loss(softmax_logits, target_label_maps)
-        model_loss = loss.dice_loss(y_true=target_label_maps, y_pred=softmax_logits)
+        model_loss = loss.categorical_dice_loss(y_true=target_label_maps, y_pred=softmax_logits)
     total_loss = tf.add_n([model_loss] + tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
+    landslide_iou, buildings_iou = get_iou(target_label_maps, softmax_logits)
+    avg_iou = (landslide_iou + buildings_iou) / 2.
 
-    # if reuse_variables is None:
-    #     one_hot_label_maps = tf.one_hot(tf.cast(tf.nn.relu(target_label_maps), dtype=tf.int32), depth=3)
-    #
-    #     tf.summary.image('return label map 0', tf.expand_dims(softmax_logits[:, :, :, 0], axis=-1) * 255)
-    #     tf.summary.image('return label map 1', tf.expand_dims(softmax_logits[:, :, :, 1], axis=-1) * 255)
-    #     tf.summary.image('return label map 2', tf.expand_dims(softmax_logits[:, :, :, 2], axis=-1) * 255)
-    #     tf.summary.image('target label map 0', tf.expand_dims(one_hot_label_maps[:, :, :, 0], axis=-1) * 255)
-    #     tf.summary.image('target label map 1', tf.expand_dims(one_hot_label_maps[:, :, :, 1], axis=-1) * 255)
-    #     tf.summary.image('target label map 2', tf.expand_dims(one_hot_label_maps[:, :, :, 2], axis=-1) * 255)
-    #
-    #     tf.summary.scalar('model_loss', model_loss)
-    #     tf.summary.scalar('total_loss', total_loss)
-    #     tf.summary.scalar('landslide_iou', landslide_iou)
-    #     tf.summary.scalar('buildings_iou', buildings_iou)
+    if reuse_variables is None:
+        one_hot_label_maps = tf.one_hot(tf.cast(tf.nn.relu(target_label_maps), dtype=tf.int32), depth=3)
 
-    return total_loss, model_loss
+        tf.summary.image('return label map 0', tf.expand_dims(softmax_logits[:, :, :, 0], axis=-1) * 255)
+        tf.summary.image('return label map 1', tf.expand_dims(softmax_logits[:, :, :, 1], axis=-1) * 255)
+        tf.summary.image('return label map 2', tf.expand_dims(softmax_logits[:, :, :, 2], axis=-1) * 255)
+        tf.summary.image('target label map 0', tf.expand_dims(one_hot_label_maps[:, :, :, 0], axis=-1) * 255)
+        tf.summary.image('target label map 1', tf.expand_dims(one_hot_label_maps[:, :, :, 1], axis=-1) * 255)
+        tf.summary.image('target label map 2', tf.expand_dims(one_hot_label_maps[:, :, :, 2], axis=-1) * 255)
+
+        tf.summary.scalar('model_loss', model_loss)
+        tf.summary.scalar('total_loss', total_loss)
+        tf.summary.scalar('landslide_iou', landslide_iou)
+        tf.summary.scalar('buildings_iou', buildings_iou)
+
+    return total_loss, model_loss, avg_iou
 
 
 def average_grads(tower_grads):
@@ -120,7 +149,7 @@ def main(argv=None):
         with tf.device('/gpu:%d' % gpu_id):
             with tf.name_scope('model_%d' % gpu_id) as scope:
 
-                total_loss, model_loss = tower_loss(input_images_split[i], input_label_maps_split[i], reuse_variables)
+                total_loss, model_loss, avg_iou = tower_loss(input_images_split[i], input_label_maps_split[i], reuse_variables)
                 batch_norm_update_operation = tf.group(*tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope))
                 reuse_variables = True
 
@@ -158,7 +187,7 @@ def main(argv=None):
 
         data_load_time, training_time = 0, 0
         epoch, step = 0, 0
-        epoch_model_loss, epoch_total_loss = 0, 0
+        epoch_model_loss, epoch_total_loss, epoch_iou = 0, 0, 0
         while epoch < 500:
             print('epoch: {:03d}'.format(epoch))
             for _ in tqdm(range(epoch_iters)):
@@ -167,11 +196,12 @@ def main(argv=None):
                 data = next(data_generator)
                 iter_data_load_time = time.time() - iter_start_time
                 data_load_time += iter_data_load_time
-                ml, tl, lr, _, summary, step = sess.run([model_loss, total_loss, learning_rate, train_operation, summary_operation, global_step],
+                ml, tl, iou, lr, _, summary, step = sess.run([model_loss, total_loss, avg_iou, learning_rate, train_operation, summary_operation, global_step],
                                               feed_dict={input_images: data[0],
                                                          input_label_maps: data[1]})
                 epoch_model_loss += ml
                 epoch_total_loss += tl
+                epoch_iou += iou
                 iter_training_time = time.time() - iter_start_time - iter_data_load_time
                 training_time += iter_training_time
                 summary_writer.add_summary(summary, global_step=step)
@@ -179,13 +209,13 @@ def main(argv=None):
             # _, ml, tl, iou, lr, summary = sess.run([train_operation, model_loss, total_loss, avg_iou, learning_rate, summary_operation],
             #                                         feed_dict={input_images: data[0],
             #                                                    input_label_maps: data[1]})
-            print('epoch {:03d}: model_loss={:.4f}, total_loss={:.4f}, learning rate={:.6f}'
-                  .format(epoch, epoch_model_loss / epoch_iters, epoch_total_loss / epoch_iters, lr))
+            print('epoch {:03d}: model_loss={:.4f}, total_loss={:.4f}, accuracy={:.4f}, learning rate={:.6f}'
+                  .format(epoch, epoch_model_loss / epoch_iters, epoch_total_loss / epoch_iters, epoch_iou / epoch_iters, lr))
             print('Data load time per image: {:.2f} ms, Network training time per image: {:.2f} ms'
                   .format((training_time * 1e3 / (FLAGS.batch_size_per_gpu * len(gpus) * epoch_iters)),
                           (data_load_time * 1e3 / (FLAGS.batch_size_per_gpu * len(gpus) * epoch_iters))))
             data_load_time, training_time = 0, 0
-            epoch_model_loss, epoch_total_loss = 0, 0
+            epoch_model_loss, epoch_total_loss, epoch_iou = 0, 0, 0
 
             saver.save(sess, join(checkpoint_path, 'model_latest.ckpt'))
 
