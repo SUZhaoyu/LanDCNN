@@ -6,23 +6,20 @@ from nets import resnet_v1
 
 FLAGS = tf.app.flags.FLAGS
 
-
 def unpool(inputs):
     return tf.image.resize_bilinear(inputs, size=[tf.shape(inputs)[1]*2, tf.shape(inputs)[2]*2])
-
 
 def batch_stardardize(images, is_training=False):
     print('INFO: Using batch standardize strategy.')
     batch_num = FLAGS.batch_size_per_gpu if is_training else 1
     print('INFO: Batch size per GPU is {}'.format(batch_num))
     channels = tf.split(axis=3, num_or_size_splits=FLAGS.num_of_channels, value=images)
-    means, vars = tf.nn.moments(images, axes=[0,1,2])
+    means, vars = tf.nn.moments(images, axes=[0, 1, 2])
     # assert len(means) == FLAGS.num_of_channels
     for i in range(FLAGS.num_of_channels):
         channels[i] -= means
         channels[i] /= vars + tf.constant(1e-5, dtype=tf.float32)
     return tf.concat(axis=3, values=channels)
-
 
 def instance_stardardize(images, is_training=False):
     print('INFO: Using instance standardize strategy.')
@@ -37,7 +34,6 @@ def instance_stardardize(images, is_training=False):
             channels[j] /= var + tf.constant(1e-6, dtype=tf.float32)
         images_split[i] = tf.concat(axis=3, values=channels)
     return tf.concat(axis=0, values=images_split)
-
 
 def model(images, weight_decay=1e-5, is_training=True):
     # if is_training:
@@ -81,14 +77,15 @@ def model(images, weight_decay=1e-5, is_training=True):
                 else:
                     g[i] = unpool(h[i])
 
-
                 print('INFO: Shape of unpool_{} (g): {}'.format(i, g[i].shape))
                 print('INFO: Shape of concat_and_merge_{} (h): {}'.format(i, h[i].shape))
 
             x = slim.conv2d(g[3], num_outputs=16, kernel_size=3)
             x = tf.image.resize_bilinear(x, size=[tf.shape(images)[1], tf.shape(images)[2]])
-
-            softmax_logits = slim.conv2d(x, num_outputs=FLAGS.num_of_labels, kernel_size=1, activation_fn=tf.nn.sigmoid, normalizer_fn=None)
+            if FLAGS.loss == 'dice':
+                softmax_logits = slim.conv2d(x, num_outputs=1, kernel_size=1, activation_fn=tf.nn.sigmoid, normalizer_fn=None)
+            else:
+                softmax_logits = slim.conv2d(x, num_outputs=FLAGS.num_of_labels, kernel_size=1, activation_fn=tf.nn.softmax, normalizer_fn=None)
 
 
             print('INFO: Shape of final score map: {}'.format(logits.shape))

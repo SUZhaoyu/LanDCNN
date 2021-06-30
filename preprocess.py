@@ -5,12 +5,12 @@ from utils import load_tiff, write_txt
 
 proj_home = '/media/data1/LanDCNN'
 dataset_home = join(proj_home, 'dataset')
-input_home = join(dataset_home, 'input')
+input_home = join(dataset_home, 'original_split')
 output_home = join(dataset_home, 'preprocessed')
 
 
 if __name__ == '__main__':
-    for task in ['validation', 'training']:
+    for task in ['training', 'validation']:
         print('INFO: Processing for {} dataset.'.format(task))
         print('INFO: Loading datasets...')
         task_input_home = join(input_home, task)
@@ -22,6 +22,14 @@ if __name__ == '__main__':
         building_labels = load_tiff(join(task_input_home, 'building_labels_{}.tif'.format(task)))
         building_masks = load_tiff(join(task_input_home, 'building_masks_{}.tif'.format(task)))
         print("INFO: Loading completed.")
+
+        print(aerial_img_pre.shape)
+        print(aerial_img_post.shape)
+        print(dtm.shape)
+        print(landslide_labels.shape)
+        print(landslide_masks.shape)
+        print(building_labels.shape)
+        print(building_masks.shape)
 
         rows = min(aerial_img_pre.shape[0],
                    aerial_img_post.shape[0],
@@ -45,9 +53,9 @@ if __name__ == '__main__':
         building_masks[building_masks[:rows, :cols, 0] != 0] = 1
 
         labels = np.zeros([rows, cols, 1])
-        labels[landslide_labels[:rows, :cols, 0] == 1, 0] = 1
+        # labels[landslide_labels[:rows, :cols, 0] == 1, 0] = 1
         labels[landslide_masks[:rows, :cols, 0] == 1, 0] = 0
-        labels[building_labels[:rows, :cols, 0] == 1, 0] = 2
+        labels[building_labels[:rows, :cols, 0] == 1, 0] = 1
         labels[building_masks[:rows, :cols, 0] == 1, 0] = -1
 
         dataset = np.concatenate([aerial_img_pre[:rows, :cols, :],
@@ -55,7 +63,12 @@ if __name__ == '__main__':
                                   dtm[:rows, :cols, :],
                                   labels[:rows, :cols, :]], axis=-1)
 
+        dataset_mean = np.mean(dataset[..., :-1], axis=(0, 1))
+        dataset_std = np.std(dataset[..., :-1], axis=(0, 1))
+
         print('INFO: Saving {} dataset.'.format(task))
         np.save(join(output_home, '{}.npy'.format(task)), dataset)
+        np.save(join(output_home, '{}_mean.npy'.format(task)), dataset_mean)
+        np.save(join(output_home, '{}_std.npy'.format(task)), dataset_std)
 
     print("INFO: Preprocess completed.")
